@@ -76,6 +76,7 @@ STATES = [
                                         a.serve.STORE.set_meta('song_details_as_of', 1760000000), a.open('settings'),
                                         a.js("document.getElementById('grp_maps').scrollIntoView(); true"))),
     # 新しい版の知らせ（長い見出しも）・ダウンロードの途中
+    ('settings', 'reportDialog', lambda a: (a.click_sel('#grp_about .reportIssue'), a.until("!!document.querySelector('.reportDlg')"))),
     ('settings', 'updatePrompt', lambda a: (a.click_sel('.updCheck'), a.until("!!document.querySelector('.updDlg .updNotes')"))),
     ('settings', 'updateRun', lambda a: (a.click_sel('.updCheck'), a.until("!!document.querySelector('.updDlg .updNotes')"),
                                          a.click_sel('.updDlg button', text='更新する'), a.until("!!document.querySelector('.updDlg .updBar')"))),
@@ -245,7 +246,7 @@ def test_screen_large_text(ui, screen, width, zoom):
 LARGE_STATES = ('settings-mapsCard', 'recommend-fewSimilar', 'recommend-reason', 'recommend-manual', 'recommend-openAll','recommend-tried', 'recommend-pending', 'recommend-starRange', 'recommend-presets', 'recommend-addPreset', 'recommend-bsdir', 'similar-pick', 'settings-presets',
                 'home-presets', 'home-manyPassed', 'home-sinceExport', 'recommend-tabDrag', 'recommend-diffSets', 'recommend-custom', 'recommend-diffDialog', 'settings-diffSets',
                 'recommend-rebuildDialog', 'recommend-coverCustom', 'settings-coverDialog', 'home-setupPlayer', 'home-setupFetch', 'home-setupReady', 'home-setupStats', 'home-statsPrivate', 'home-statsDialog', 'recommend-statsWarn',
-                'settings-updatePrompt')
+                'settings-updatePrompt', 'settings-reportDialog')
 
 
 @pytest.mark.parametrize('screen,state,prep', [s for s in STATES if f'{s[0]}-{s[1]}' in LARGE_STATES],

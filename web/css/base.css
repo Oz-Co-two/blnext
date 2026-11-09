@@ -581,7 +581,7 @@ table.list tr.mute{ cursor:pointer; }
 .statsHowHead{ margin:4px 0 0; }
 .statsSteps{ margin:0; padding-left:22px; font-size:13px; display:flex; flex-direction:column; gap:2px; }
 .statsImg{ display:block; width:100%; max-width:600px; height:auto; border-radius:8px; border:1px solid var(--widget2); }
-.statsDlg .modalFoot{ gap:8px; flex-wrap:wrap; }
+.statsDlg .modalFoot, .reportDlg .modalFoot{ gap:8px; flex-wrap:wrap; }
 .statsNotice{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
 .statsNotice .btnRow{ margin:0; flex:none; }
 .statsNoticeText{ flex:1 1 320px; min-width:0; }

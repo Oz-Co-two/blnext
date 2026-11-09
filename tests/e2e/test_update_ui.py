@@ -178,9 +178,25 @@ def test_about_report(ui, monkeypatch):
     assert ui.js(row + ".querySelector('.lbl').innerText") == '不具合の報告'
     desc = ui.js(row + ".querySelector('.desc').innerText")
     assert 'GitHub の Issues' in desc and 'アカウント' in desc and 'Windows の版' in desc and 'プレイヤー ID' in desc
+    # 押すと、GitHub を開く前に確認の小さな画面を出す（ログインが要ること。v1.0.1）。最初に選ばれているのは「やめる」
+    dlg = "document.querySelector('.reportDlg')"
+    for close in ("document.querySelector('.reportDlg .reportCancel').click()",
+                  "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))"):
+        ui.click_sel('#grp_about .reportIssue', text='不具合を報告')
+        ui.until('!!' + dlg, what='確認の小さな画面')
+        assert ui.js("document.activeElement.classList.contains('reportCancel')")
+        ui.js(close)
+        ui.until('!' + dlg, what='閉じる')
+    assert opened == []                               # やめた・Esc では開かない
     ui.click_sel('#grp_about .reportIssue', text='不具合を報告')
+    ui.until('!!' + dlg, what='確認の小さな画面')
+    text = ui.js(dlg + '.innerText')
+    assert 'ログイン' in text and 'アカウント' in text and 'Windows の版' in text and 'blnext.log' in text
+    assert ui.layout_issues() == []
+    ui.click_sel('.reportDlg .reportGo', text='GitHub を開く')
     _wait_for(lambda: opened)
     assert opened == [ui.serve.issue_url()] and opened[0].startswith(ui.serve.ISSUES_URL + '?')
+    assert not ui.js('!!' + dlg)                      # 開いたら閉じる
     ui.click_sel('#grp_about .openLogs', text='ログのフォルダを開く')
     _wait_for(lambda: started)
     assert started == [ui.serve.logs.log_dir(ui.serve.DATA_DIR)] and os.path.isdir(started[0])

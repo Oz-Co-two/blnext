@@ -160,7 +160,7 @@ export async function render(main, ctx){
     h('div', {class: 'partHead'}, h('span', {class: 'partChip'}, t('set.chipPreset', 'セットごと')),
       h('h2', {}, tf('set.perPresetOf', '「{name}」のセット', {name: preset.name}))),
     h('p', {class: 'mute small partNote'}, t('set.perPresetNote',
-      'リストの条件・計算の数値・プレイリスト名・画像はセットごとに持てます。例えば「ワンセイバー用」のセットを足して、モードを OneSaber だけにすると、別のおすすめとプレイリストを作れます。下のタブで、どのセットを変えるかを選びます。')),
+      'リストの条件・計算の数値・プレイリスト名・画像はセットごとに持てます。例えば「ワンセイバー用」のセットを足して、モードを OneSaber だけにすると、別のプレイリストを作れます。下のタブで、どのセットを変えるかを選びます。')),
     presetTabs(() => redraw('setPreset')),
     presetCard(preset),
     PRESET_GROUPS.map(g => group(g)));
@@ -266,6 +266,27 @@ async function openFixed(name, body){
   if(!r.ok) toast(errText(r.error), 'err');
 }
 
+// 「不具合を報告」は、GitHub を開く前に確認の小さな画面を出す（v1.0.1。ログインしていない人には、いきなり GitHub のログインの画面が
+// 出て驚かせたため。報告は GitHub の Issues で受ける＝ログのファイルを添えてもらえる。少しの手間はあってよい、と利用者が決めた）。
+// 最初に選ばれているのは「やめる」（Enter だけで開かないように）
+function reportDialog(){
+  const close = () => { back.remove(); document.removeEventListener('keydown', onEsc); };
+  const onEsc = e => { if(e.key === 'Escape') close(); };
+  const cancel = h('button', {class: 'reportCancel', onclick: close}, t('set.report.cancel', 'やめる'));
+  const box = h('div', {class: 'modal narrow reportDlg', role: 'dialog', 'aria-modal': 'true'},
+    h('h2', {}, t('set.report.title', 'GitHub で不具合を報告します')),
+    h('p', {}, t('set.report.login', 'GitHub の Issues（不具合の報告を受ける所）のページをブラウザで開きます。書き込むには GitHub のアカウントでのログインが要ります。ログインしていなければ、先に GitHub のログインの画面が出ます（アカウントは無料で作れます）。')),
+    h('p', {}, t('set.report.body', '開くページには、このアプリの版と Windows の版を最初から入れてあります。起きたことと、その前にした操作を書いてください。')),
+    h('p', {class: 'mute small'}, t('set.report.log', '「ログのフォルダを開く」で開くフォルダの blnext.log を、書く欄にドラッグして添えてもらえると、原因を調べやすくなります（ログには BeatLeader に問い合わせた URL＝あなたのプレイヤー ID が入ります）。')),
+    h('div', {class: 'modalFoot'}, cancel,
+      h('button', {class: 'reportLogs', onclick: () => openFixed('open/logs')}, t('set.about.logs', 'ログのフォルダを開く')),
+      h('button', {class: 'primary reportGo', onclick: () => { close(); openFixed('update/open', {what: 'issues'}); }}, t('set.report.go', 'GitHub を開く'))));
+  const back = h('div', {class: 'modalBack', onclick: e => { if(e.target === back) close(); }}, box);
+  document.body.append(back);
+  document.addEventListener('keydown', onEsc);
+  cancel.focus();
+}
+
 // このアプリについて: 版・更新の確認・ライセンス（GPLv3。無保証）とソースコードの場所・不具合の報告（GitHub の Issues）とログのフォルダ
 function aboutCard(){
   return h('section', {class: 'card', id: 'grp_about'},
@@ -286,7 +307,7 @@ function aboutCard(){
         h('div', {class: 'what'}, h('span', {class: 'lbl'}, t('set.about.report', '不具合の報告')),
           h('div', {class: 'desc'}, t('set.about.reportDesc', '動かない・表示がおかしいなど困った時は、「不具合を報告」を押して GitHub の Issues に書いてください（GitHub のアカウントが要ります）。開くページには、このアプリの版と Windows の版を自動で入れてあります。起きたこと・その前にした操作・期待したことを書いてもらえると助かります。「ログのフォルダを開く」で開くフォルダの中のファイル（blnext.log）を添えてもらえると、原因を調べやすくなります。ログには BeatLeader に問い合わせた URL（あなたのプレイヤー ID）と、失敗した時はこのアプリのフォルダの場所が入ることがあります。'))),
         h('div', {class: 'val'}, h('div', {class: 'ctl'},
-          h('button', {class: 'reportIssue', onclick: () => openFixed('update/open', {what: 'issues'})}, t('set.about.reportBtn', '不具合を報告')),
+          h('button', {class: 'reportIssue', onclick: reportDialog}, t('set.about.reportBtn', '不具合を報告')),
           h('button', {class: 'openLogs', onclick: () => openFixed('open/logs')}, t('set.about.logs', 'ログのフォルダを開く')))))));
 }
 
