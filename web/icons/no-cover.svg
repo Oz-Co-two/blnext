@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- 曲のカバー画像が無い・取れなかった時の代わりの絵（serve.py の /cover/ と、画面の songCover） -->
+  <rect width="64" height="64" rx="8" fill="#1c2421"/>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="7.5" fill="none" stroke="#2b3833"/>
+  <g fill="#3b7a62">
+    <ellipse cx="26" cy="43" rx="8" ry="6" transform="rotate(-20 26 43)"/>
+    <rect x="31" y="16" width="4" height="28" rx="1"/>
+    <path d="M35 16C36 22 46 24 45 34C43 29 39 27.5 35 27.5Z"/>
+  </g>
+</svg>

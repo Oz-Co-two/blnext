@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- CSP: APIから来た曲名・プレイヤー名にスクリプトを仕込まれても実行させない二重の守り（NLM と同じ）。
+     インラインの<script>・onclick 等の HTML 属性のハンドラは禁止。イベントは JS で addEventListener する。
+     frame-src（と child-src）に 'none' を書かないこと: Edge が自分用の値をそこへ足すため「'none' と他の値が並んでいる」と言われ、
+     'none' が無視される。最後の ; も消さないこと（Edge が最後に区切り無しで child-src … を足し、前の項目の値として読まれる）。
+     2026-10-15 に tools/cdp.py check で見つけた。枠は使っていないので 'self' にしている -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self';">
+<title>blnext</title>
+<link rel="icon" href="icons/app.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/base.css">
+<script src="js/boot.js"></script>
+<script type="module" src="js/main.js"></script>
+</head>
+<body>
+<div id="bootCover"></div>
+<header id="topbar">
+  <img src="icons/app.svg" alt="">
+  <span id="appName">blnext</span>
+  <nav id="nav">
+    <button data-screen="home" data-i18n="nav.home">ホーム</button>
+    <button data-screen="recommend" data-i18n="nav.recommend">プレイリスト</button>
+    <button data-screen="similar" data-i18n="nav.similar">似ている人</button>
+    <button data-screen="settings" data-i18n="nav.settings">設定</button>
+    <button data-screen="guide" data-i18n="nav.guide">使い方</button>
+  </nav>
+  <span id="dataAt"></span>
+  <button id="refreshBtn"><span class="ico" aria-hidden="true">↻</span> <span data-i18n="top.refresh">更新</span></button>
+  <label class="fontCtl"><span class="aSmall" aria-hidden="true">A</span><input type="range" id="fontScale" min="0" max="3" step="1" value="0"
+    aria-label="文字の大きさ" data-i18n-t="top.scaleLbl"><span class="aBig" aria-hidden="true">A</span></label>
+  <span id="appVersion"></span>
+</header>
+<div id="strip"></div>
+<main id="main"></main>
+<div id="toast"></div>
+</body>
+</html>

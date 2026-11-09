@@ -1,0 +1,32 @@
+# Python仮想環境（pip installで作り直せるためソース管理外）
+.venv/
+.venv-build/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# PyInstallerのビルド成果物
+build/
+dist/
+
+# 使う用の exe のフォルダ（tools/build_and_deploy.py が exe と _internal だけを差し替える。中に利用者のデータがある）
+/blnext-app/
+
+# 実行時にできる利用者のデータ（開発中はリポジトリ直下にできる。exe 版は exe の隣）
+/config/
+/data/
+/logs/
+/exports/
+
+# 調査・検証で取った BeatLeader の応答（他のプレイヤーのIDや名前が入るため公開しない）
+/devdata/
+
+# テストの出力（.coverage は tools/run_tests.py --coverage の途中のファイル）
+/test-out/
+# 画面の比較の基準の写真（PC ごとに持つ。フォントの描画・GPU の違いで数画素変わるため。tests/README.md）
+/tests/visual/baseline/
+.coverage
+.coverage.*
+
+# Claude Code のローカル設定・作業メモ（個人環境の情報を含むため公開しない）
+.claude/
