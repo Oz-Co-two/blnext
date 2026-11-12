@@ -128,7 +128,8 @@ def test_cap_and_pb_notes(ui, monkeypatch):
     assert margin == 0.005
     cap = max(c0['best_acc'], c0['est_acc']) + 0.002
     top = cap - margin
-    monkeypatch.setattr(model, 'ceiling', lambda stars, mode, exclude=None: (top, 'LB005', 7) if exclude == lid else (None, None, 2))
+    # 4つ目は使った窓の幅。近い★の曲が足りずに ±1.0 まで広げた上限にする（説明の「近い★（★〜★）」が広げた幅になる）
+    monkeypatch.setattr(model, 'ceiling', lambda stars, mode, exclude=None: (top, 'LB005', 7, 1.0) if exclude == lid else (None, None, 2, None))
     monkeypatch.setattr(ui.serve.ENGINE, '_ests', OrderedDict())   # 推定を作り直させる（終わったら元の推定に戻る）
     ui.serve._api_recommend_action({'action': 'pin', 'id': lid, 'preset': 'p1'})   # 見込みが下がっても出るように固定する
     r = ui.serve._api_recommend({'preset': 'p1'})
@@ -139,7 +140,7 @@ def test_cap_and_pb_notes(ui, monkeypatch):
     notes = ui.js("[...document.querySelectorAll('.reasons .flag')].map(d=>d.innerText)")
     want = ('• 近い★（★%.2f〜★%.2f・7 曲）のあなたのほかの曲の一番 %.2f%%（%s ExpertPlus ★3.50）＋難しさの余裕 0.5%% ＝ %.2f%%を、'
             'この曲の精度の上限にしています。次に遊んだ日の一番のぶれのうち %.0f%% が上限より上だったので' % (
-                c['stars'] - 0.5, c['stars'] + 0.5, 100 * top, EVIL, 100 * cap, 100 * c['acc_cap']['over']))
+                c['stars'] - 1.0, c['stars'] + 1.0, 100 * top, EVIL, 100 * cap, 100 * c['acc_cap']['over']))
     assert any(x.startswith(want) for x in notes), (want, notes)
     assert '下の • の分も直して' in ui.js("document.querySelector('.reasons').innerText")
     assert ui.js('window.__xss === undefined')
@@ -598,7 +599,7 @@ def test_few_similar_notes(ui, monkeypatch):
 
     class Ceiling:
         def __call__(self, stars, mode, exclude=None):
-            return None, None, 2
+            return None, None, 2, None
 
         def overall(self, mode, exclude=None):
             return (top, 'LB005') if exclude == lid else (None, None)

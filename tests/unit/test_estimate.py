@@ -429,6 +429,43 @@ def test_clear_history_counts_fail_days(tmp_path):
     assert CL.fail_weight(1, 1) == 1 + w
 
 
+def test_clear_history_soft_only_player(tmp_path):
+    # 失敗（2）がほとんど記録されない人（クリアとやり直し・途中でやめただけ）は、やり直し・やめただけの日を数えない。
+    # 見込みの回帰に使う日はクリアした日だけになり、見込みは求めない（2026-11-12: 着実が 0曲になった国内上位の人）
+    D = 86400
+    t = int(time.mktime((2026, 9, 1, 12, 0, 0, 0, 0, -1)))
+    passes = {'M%02d' % i: 2.0 + i * 0.2 for i in range(20)}
+
+    def rows(fail_maps):
+        out = []
+        for i, lid in enumerate(passes):
+            out += [(lid, t, 3, ''), (lid, t + 60, 4, ''), (lid, t + D, 1, ''), (lid, t + 2 * D, 3, '')]   # やり直し・クリア・やり直し
+            if i < fail_maps:
+                out.append((lid, t + 3 * D, 2, ''))
+        return out
+
+    st = Store(str(tmp_path / 'soft.sqlite'))
+    _attempts(st, passes, rows(0))
+    days, now = CL.clear_history(st)
+    assert len(days) == 20 and all(d.ok and d.fails == 0 for d in days) and now == {}
+    assert CL.fit_clear(days) is None
+    st.close()
+    # クリアできなかった日のうち失敗した日が HARD_MIN_SHARE 以上なら、今までどおりやり直し・やめただけの日も数える（失敗 5 日 ÷ 45 日）
+    st = Store(str(tmp_path / 'mixed.sqlite'))
+    _attempts(st, passes, rows(5))
+    days, now = CL.clear_history(st)
+    assert len(days) == 65 and sum(1 for d in days if not d.ok) == 45
+    assert now['M00'] == (1, 1) and now['M19'] == (0, 1)
+    st.close()
+    # 1割より少なければ数えない（失敗 4 日 ÷ 44 日。失敗した日だけが残る）
+    st = Store(str(tmp_path / 'few.sqlite'))
+    _attempts(st, passes, rows(4))
+    days, now = CL.clear_history(st)
+    assert len(days) == 24 and sum(1 for d in days if not d.ok) == 4 and now == {'M%02d' % i: (1, 0) for i in range(4)}
+    assert CL.soft_only([]) is False and CL.soft_only([{'ok': True, 'hard': False}]) is False
+    st.close()
+
+
 def test_fit_clear_fail_term():
     # クリアできなかった日が続く日はクリアしにくいデータ → c は負で、元にした値の近く。k=0 の見込みは今までと同じ
     rng = np.random.default_rng(2)
@@ -1082,13 +1119,12 @@ def test_acc_ceiling_window(monkeypatch):
     from core.estimate import model as M
     assert (M.CEIL_WINDOW, M.CEIL_MIN) == (0.5, 8)
     monkeypatch.setattr(M, 'CEIL_MIN', 5)
-    rows = [('Standard', 5.0 + 0.125 * i, 0.90 + 0.001 * i, 'S%d' % i) for i in range(9)]   # ★5.0〜6.0
-    rows += [('Standard', 4.0, 0.97, 'LOW'), ('OneSaber', 5.5, 0.99, 'ONE')]                 # 窓の外・ほかのモード
-    rows += [('OneSaber', 5.4 + 0.01 * i, 0.9, 'O%d' % i) for i in range(3)]
-    ce = M.AccCeiling(rows)
+    monkeypatch.setattr(M, 'CEIL_WINDOW_MAX', M.CEIL_WINDOW)   # 広げない時の窓の数え方（広げるのは test_acc_ceiling_widens）
+    ce = M.AccCeiling(_ceiling_rows())
 
     def got(*a):
-        v, lid, n = ce(*a)
+        v, lid, n, w = ce(*a)
+        assert w == (None if v is None else M.CEIL_WINDOW)
         return (None if v is None else round(v, 6)), lid, n
     assert got(5.5, 'Standard') == (0.908, 'S8', 9)                     # 窓 5.0〜6.0 の全部（両端も入る・★4.0 の LOW は外）
     assert got(5.5, 'Standard', 'S8') == (0.907, 'S7', 8)               # その曲自身は除く
@@ -1100,10 +1136,35 @@ def test_acc_ceiling_window(monkeypatch):
     assert got(6.6, 'Standard') == (None, None, 0)
 
 
+def _ceiling_rows():
+    rows = [('Standard', 5.0 + 0.125 * i, 0.90 + 0.001 * i, 'S%d' % i) for i in range(9)]   # ★5.0〜6.0
+    rows += [('Standard', 4.0, 0.97, 'LOW'), ('OneSaber', 5.5, 0.99, 'ONE')]                 # 窓の外・ほかのモード
+    rows += [('OneSaber', 5.4 + 0.01 * i, 0.9, 'O%d' % i) for i in range(3)]
+    return rows
+
+
+def test_acc_ceiling_widens(monkeypatch):
+    # ±CEIL_WINDOW のほかの曲が CEIL_MIN より少なければ、CEIL_WINDOW ずつ CEIL_WINDOW_MAX まで広げる（2026-11-12。遊んだ曲の少ない★の帯で
+    # 上限が付かず、易しい未プレイの曲が 99% 台に押し上げられていた）。返り値の 4つ目は使った窓の幅。広げても足りなければ上限なし
+    from core.estimate import model as M
+    assert M.CEIL_WINDOW_MAX == 1.0
+    monkeypatch.setattr(M, 'CEIL_MIN', 5)
+    ce = M.AccCeiling(_ceiling_rows())
+    r = lambda *a: (lambda v, lid, n, w: ((None if v is None else round(v, 6)), lid, n, w))(*ce(*a))
+    assert r(5.5, 'Standard') == (0.908, 'S8', 9, 0.5)          # 足りていれば広げない
+    assert r(4.875, 'Standard') == (0.97, 'LOW', 9, 1.0)        # ±0.5 は 4曲 → ±1.0（★3.875〜5.875）で LOW と S0〜S7
+    assert r(4.5, 'Standard') == (0.97, 'LOW', 6, 1.0)          # ±0.5 は 2曲 → ±1.0（★3.5〜5.5）で LOW と S0〜S4
+    assert r(6.6, 'Standard') == (None, None, 4, None)          # ±1.0（★5.6〜7.6）でも S5〜S8 の 4曲
+    assert r(5.5, 'OneSaber') == (None, None, 4, None)          # 広げても増えない
+    monkeypatch.setattr(M, 'CEIL_MIN', 8)
+    assert r(4.875, 'Standard') == (0.97, 'LOW', 9, 1.0) and r(4.5, 'Standard') == (None, None, 6, None)
+
+
 def test_acc_ceiling_from_db(tmp_path, monkeypatch):
     # DB から: 自分のランクの譜面のスコア（NF を除く）だけ。★はスコアの★（モディファイアで補正した★）
     from core.estimate import model as M
     monkeypatch.setattr(M, 'CEIL_MIN', 5)
+    monkeypatch.setattr(M, 'CEIL_WINDOW_MAX', M.CEIL_WINDOW)   # 読む行の確かめ（窓は広げない）
     st = Store(str(tmp_path / 'db.sqlite'))
     with st.tx():
         for i in range(10):
@@ -1115,11 +1176,11 @@ def test_acc_ceiling_from_db(tmp_path, monkeypatch):
         for r in rows:
             st.conn.execute('INSERT INTO scores(player_id, leaderboard_id, acc, stars, modifiers) VALUES(?,?,?,?,?)', r)
     ce = M.acc_ceiling(st, '1')
-    v, lid, n = ce(5.0, 'Standard')            # L8 は譜面の★は 5.0 だが、スコアの★（SS で補正）は 6.0 なので窓の外
+    v, lid, n, _ = ce(5.0, 'Standard')            # L8 は譜面の★は 5.0 だが、スコアの★（SS で補正）は 6.0 なので窓の外
     assert v == pytest.approx(0.95) and (lid, n) == ('L5', 6)
-    v, lid, n = ce(5.0, 'Standard', 'L5')
+    v, lid, n, _ = ce(5.0, 'Standard', 'L5')
     assert v == pytest.approx(0.94) and (lid, n) == ('L4', 5)
-    assert ce(5.6, 'Standard') == (None, None, 1)   # 窓 5.1〜6.1 は L8 だけ
+    assert ce(5.6, 'Standard') == (None, None, 1, None)   # 窓 5.1〜6.1 は L8 だけ
     st.close()
 
 
@@ -1156,7 +1217,9 @@ def test_estimate_caps_at_ceiling(tmp_path, monkeypatch):
     capped = {played[0]: max(a0['best_acc'], a0['est_acc']) + 0.004,   # 自己ベストと推定より少し上（幅の上の端だけ削る）
               played[1]: a1['best_acc'] - 0.005,                       # 自己ベストより下（伸びしろ 0）
               unpl[0]: u0['est_acc'] - 0.01}                           # 未プレイの曲の推定より下（推定を頭打ち）
-    model.ceiling = lambda stars, mode, exclude=None: ((capped[exclude], 'LB005', 7) if exclude in capped else (None, None, 3))
+    # 4つ目は使った窓の幅（未プレイの曲は広げた窓で付いたことにする。画面の「近い★（★〜★）」に使う）
+    model.ceiling = lambda stars, mode, exclude=None: ((capped[exclude], 'LB005', 7, 1.0 if exclude == unpl[0] else 0.5)
+                                                      if exclude in capped else (None, None, 3, None))
     on = {c['leaderboard_id']: c for c in R.estimate(st, model, s, model.built_at)}
     for lid, c in on.items():
         a = off[lid]
@@ -1165,7 +1228,8 @@ def test_estimate_caps_at_ceiling(tmp_path, monkeypatch):
             continue
         cap = capped[lid]
         x = c['acc_cap']
-        assert x['acc'] == cap and x['song'] == 'Song LB005' and x['n'] == 7 and x['window'] == 0.5 and x['stars'] == pytest.approx(3.5)
+        assert x['acc'] == cap and x['song'] == 'Song LB005' and x['n'] == 7 and x['stars'] == pytest.approx(3.5)
+        assert x['window'] == (1.0 if lid == unpl[0] else 0.5)
         center = min(R.ACC_MAX, max(0.0, a['est_acc']))
         dist = R.AccDist(center, c['kind'] == 'played')
         assert abs(x['over'] - (1 - dist.cdf(cap))) < 1e-12

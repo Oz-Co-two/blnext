@@ -43,6 +43,13 @@ SOFT_DAY_WEIGHT = 0.5   # やり直し・途中でやめただけの日（失敗
 FAIL_MIN_DAYS = 30      # c を自分の記録から求めるのに要る「前にクリアできなかった日がある（譜面, 日）」の数（少なければ FAIL_DEFAULT）
 FAIL_DEFAULT = -1.0     # 足りない時の c（自分の記録で求めた −2.0 より控えめに）
 FAIL_MAX = 3.0          # c の大きさの上限（−3.0 より下げない。上がる向き＝正の値は 0 にする）
+# 失敗（end_type 2）がほとんど記録されない人（2026-11-12）: 挑戦の記録が「クリア」と「やり直し・途中でやめた」だけの人がいる
+# （統計を公開している国内上位の人の多くが、直近1年に失敗した日が 0日。失敗する前にやり直す・精度が伸びないと分かった所で
+# やめる遊び方か、失敗が記録されない環境）。この人のやり直し・やめただけの日は「クリアできなかった日」とは言えない（そう数えると、
+# 一番易しい曲でも見込みが 8割に届かず、着実（クリアの見込みの下限 80%）が 0曲になった）。クリアできなかった日のうち失敗した日が
+# この割合より少なければ、やり直し・やめただけの日を数えない（見込みの回帰にも、クリアできなかった日の数にも）。失敗した日も
+# 少なければ見込みは求めない（統計が非公開の人と同じ扱い）。失敗の記録がある人（作者など）は半分以上が失敗した日なので変わらない
+HARD_MIN_SHARE = 0.1
 
 
 class Day(NamedTuple):
@@ -121,7 +128,8 @@ def clear_history(store, cleared_at=None, since=None):
     cleared_at は自分のスコア（NF を除く）の {leaderboard_id: 自己ベストの日時}。その日もクリアした日とみなす（挑戦の記録が取れる
     より前のクリアもあるため。見込みの回帰の「その日にクリアできたか」は挑戦の記録だけで決める）。
     返り値は (日の並び [Day], 譜面ごとの今のクリアできなかった日 {leaderboard_id: (失敗した日, やり直しかやめただけの日)})。
-    今のクリアできなかった日は、最後にクリアした日の後の分（無い譜面は入らない）"""
+    今のクリアできなかった日は、最後にクリアした日の後の分（無い譜面は入らない）。
+    失敗がほとんど記録されない人（HARD_MIN_SHARE）は、やり直し・やめただけの日を読まなかったことにする"""
     cleared_at = cleared_at or {}
     day_of = day_key
     days = {}
@@ -133,6 +141,8 @@ def clear_history(store, cleared_at=None, since=None):
         d = days.setdefault((r['leaderboard_id'], day_of(r['timeset'])), {'pass': r['pass_rating'], 'ok': False, 'hard': False})
         d['ok'] = d['ok'] or r['end_type'] == 1
         d['hard'] = d['hard'] or r['end_type'] == 2
+    if soft_only(days.values()):
+        days = {k: d for k, d in days.items() if d['ok'] or d['hard']}
     by_map = {}
     for (lid, day), d in days.items():
         by_map.setdefault(lid, []).append((day, d))
@@ -161,6 +171,12 @@ def clear_history(store, cleared_at=None, since=None):
         if hard or soft:
             now[lid] = (hard, soft)
     return out, now
+
+
+def soft_only(days):
+    """（譜面, 日）のまとめ（{ok, hard}）の並びから、失敗がほとんど記録されない人か（HARD_MIN_SHARE）。クリアできなかった日が無ければ False"""
+    miss = [d for d in days if not d['ok']]
+    return bool(miss) and sum(1 for d in miss if d['hard']) < HARD_MIN_SHARE * len(miss)
 
 
 def _fit_fail(days, a, b):

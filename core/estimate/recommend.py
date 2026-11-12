@@ -6,7 +6,6 @@ import numpy as np
 
 from . import clear as C
 from .ppcalc import pp_func_of_row, WEIGHT_BASE
-from .model import CEIL_WINDOW
 
 FC_GAP_MIN = 0.005      # FC していた場合の精度との差のうち、その pass で普通の量より多い分がこれ以上なら「ミスで落とした曲」
 RECENT_DAYS = 30        # 伸び悩みの判定で「最近挑戦している」と見なす日数
@@ -329,7 +328,7 @@ def estimate(store, model, settings, now):
                     flags.append('pb')
         # 精度の上限（近い★の、ほかの曲の自分の一番＋難しさの段階の余裕 acc_cap_margin）。推定の幅は上限で切る前の推定を中心にし、
         # 上限より上を上限に寄せる
-        top, cap_lid, cap_n = model.ceiling(lb['stars'], lb['mode'], lid) if model.ceiling else (None, None, 0)
+        top, cap_lid, cap_n, cap_w = model.ceiling(lb['stars'], lb['mode'], lid) if model.ceiling else (None, None, 0, None)
         overall = False
         if top is None and model.few_similar and model.ceiling:
             # 似ている人が足りない人はスコアが少なく窓の曲が足りないことが多いので、同じモードのほかの曲の自分の一番で切る
@@ -392,7 +391,7 @@ def estimate(store, model, settings, now):
             over = 1.0 - dist.cdf(cap)
             h = lb_by.get(cap_lid) or {}
             acc_cap = {'acc': cap, 'top': top, 'margin': cap_margin, 'song': h.get('song_name'), 'difficulty': h.get('difficulty'), 'stars': h.get('stars'),
-                       'n': cap_n, 'window': None if overall else CEIL_WINDOW, 'over': over}   # window が None なら同じモードの全部の曲の一番
+                       'n': cap_n, 'window': None if overall else cap_w, 'over': over}   # window は使った窓の幅（±★）。None なら同じモードの全部の曲の一番
             if (best and best >= cap) or over >= CAP_FLAG_SHARE:
                 flags.append('cap')
         # 上がる国内順位: 今の自分の PP より上で、増えた後の PP（期待値の分）以下の人の数

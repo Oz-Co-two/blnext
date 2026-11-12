@@ -1,7 +1,11 @@
 # 起動ごとの取得（docs/spec.md の「データ取得」「差分更新」）。別のスレッドで動かし、進捗を progress() で返す。
-# 流れ: 自分 → 国内ランキング（自分の上下と目標順位のページ）→ ランク譜面（1日1回）→ 自分のスコア → アテンプト → 自分の履歴
+# 流れ: 自分 → 国内ランキング（自分の上下と目標順位のページ）→ アテンプト → 自分の履歴 → ランク譜面（1日1回）→ 自分のスコア
 #       → 比較対象のスコア（上下の範囲の中からスコアの多い順に pool_max 人。最終ランクスコア時刻が前回から変わった人だけ。ランクのスコアが min_scores より少ない人は取らない）
 #  ランク譜面の一覧は全曲データ（song_details.py）で変化を確かめ、変わった時だけ取る（_update_maps）
+#  - 全曲データ（jsDelivr。約10MB で、日によって 2〜20秒以上かかる）は BeatLeader とは別のサーバーなので、自分のプロフィールの後に
+#    別のスレッドで取り始め、BeatLeader の取得（国内ランキング・アテンプト・履歴。多くは要求の間隔を空けて待つ時間）と重ねる（_SongDetailsPrefetch）。
+#    アテンプトと履歴をランク譜面の前にしたのは、重ねる時間を長くするため（どちらもランク譜面・自分のスコアに依らない）。
+#    BeatLeader への要求の数・間隔・同時の数は変えない。ランク譜面 → 自分のスコア → 比較対象の順（リウェイトの見分け）も変えない
 #  - 1人分・1段階ごとに保存する＝途中でやめても（閉じても）取得済みの分は残る
 #  - 自分のプロフィールが取れない（オフライン等）時は止め、画面は前回までのデータで出す
 #  - 範囲から外れた人のデータは消さない（戻ってきた時に差分だけで済むように）
@@ -42,6 +46,47 @@ def _day(ts):
     return time.strftime('%Y-%m-%d', time.gmtime(ts))
 
 
+def _load_song_details(opener, user_agent, etag, cancelled):
+    """全曲データを取って読む → ((作成の時刻, ランク譜面) か、前と同じ（304）なら None, ETag)。取れない・読めなければ sd.Unavailable"""
+    t0 = time.monotonic()
+    gz, etag = sd.fetch(opener, user_agent, etag, cancelled)
+    out = sd.parse(gz) if gz is not None else None
+    log.info('song details %s %.1fs', 'not modified' if gz is None else '%dB' % len(gz), time.monotonic() - t0)
+    return out, etag
+
+
+class _SongDetailsPrefetch:
+    """全曲データを別のスレッドで取って読んでおく（BeatLeader の取得と重ねるため）。このスレッドはデータベースに触らず、
+    結果は取得のスレッドが result() で受け取る。stop() の後は次の塊を読む所でやめる"""
+    def __init__(self, opener, user_agent, etag, cancelled):
+        self.etag = etag
+        self._stop = threading.Event()
+        self._done = threading.Event()
+        self._out = self._err = None
+        threading.Thread(target=self._work, args=(opener, user_agent, lambda: cancelled() or self._stop.is_set()),
+                         name='song-details', daemon=True).start()   # アプリを閉じる時に待たない
+
+    def _work(self, opener, user_agent, cancelled):
+        try:
+            self._out = _load_song_details(opener, user_agent, self.etag, cancelled)
+        except Exception as e:   # 取得のスレッドで投げ直す
+            self._err = e
+        finally:
+            self._done.set()
+
+    def result(self, cancel_event):
+        """終わるまで待って _load_song_details の結果を返す（失敗はそのまま投げる）。待つ間に中止されたら、終わるのを待たずに Cancelled"""
+        while not self._done.wait(0.1):
+            if cancel_event.is_set():
+                raise Cancelled()
+        if self._err is not None:
+            raise self._err
+        return self._out
+
+    def stop(self):
+        self._stop.set()
+
+
 def pool_pages(rank, above, below, target=None, page_size=bl.PLAYERS_PAGE):
     """自分の国内順位 rank の上 above 人・下 below 人と、目標順位が入るページ番号の並び"""
     if not rank:
@@ -60,6 +105,7 @@ class Refresher:
         self._lock = threading.Lock()
         self._client = None
         self._public = None   # 今の取得で読んだ統計の公開の印（_do が入れる）
+        self._pre = None      # 取り始めた全曲データ（_SongDetailsPrefetch。_update_maps が受け取る）
         self._state = self._blank()
 
     @staticmethod
@@ -130,6 +176,9 @@ class Refresher:
             self._state['error'] = 'internal'
             self._warn('internal', '%s: %s' % (type(e).__name__, e))
         finally:
+            if self._pre is not None:   # 使う前に止まった（中止・失敗）: 取りかけの全曲データをやめる
+                self._pre.stop()
+                self._pre = None
             self._state.update(running=False, finishedAt=now())
 
     def _do(self, run_at):
@@ -167,6 +216,12 @@ class Refresher:
         country = me['country'] or s['country']
         if s['country'] != country:
             self._warn('country-mismatch', country)
+        # アプリの PP の式の版が変わったら（直した版の最初の取得）、譜面・自分・比較対象を全部取り直す（ランク譜面を必ず取るかが決まるので、全曲データを取り始める前に）
+        full = st.meta('pp_formula') != ppcalc.UPSTREAM_COMMIT
+        if full:
+            self._refetch_all()
+        # 全曲データ（BeatLeader とは別のサーバー）を取り始める。使うのは 5.（まだ届いていなければそこで待つ）
+        self._pre = self._prefetch_song_details(run_at)
 
         # 2. 国内ランキング（自分の上下と目標順位のページ）
         pages = pool_pages(me['country_rank'], s['pool_above'], s['pool_below'], s['target_country_rank'])
@@ -190,25 +245,10 @@ class Refresher:
         if got_any or not pages:   # 1ページも取れなかった回は進めない（前回の目標順位の人・周りの人・比較対象をそのまま使う）
             st.set_meta('ranking_at', run_at)
 
-        # 3. ランク譜面の一覧（全曲データで変化を確かめて、変わった時だけ）。アプリの PP の式の版が変わったら（直した版の最初の取得）全部取り直す
-        full = st.meta('pp_formula') != ppcalc.UPSTREAM_COMMIT
-        if full:
-            self._refetch_all()
-        full = self._update_maps(run_at) or full
-
-        # 4. 自分のスコア。BeatLeader 側で PP・★が変わっていたら（リウェイト）、譜面と自分のスコアをこの回で取り直し、比較対象も全員取り直す
-        changed = self._fetch_self_scores(pid, run_at, detect=not full)
-        if changed:
-            self._notice('reweight', changed)
-            self._refetch_all()
-            self._fetch_maps(run_at)
-            self._fetch_self_scores(pid, run_at, detect=False)
-
-        # 5. アテンプト（統計を公開している時だけ）
+        # 3. アテンプト（統計を公開している時だけ）
         self._fetch_attempts(pid, run_at)
-        review.update(st, pid, run_at)   # 前回出力した曲の結果（振り返り）
 
-        # 6. 自分の履歴
+        # 4. 自分の履歴
         self._phase('history')
         try:
             first = not st.q1("SELECT 1 AS x FROM self_history WHERE source='api' LIMIT 1")
@@ -225,10 +265,39 @@ class Refresher:
                 raise
             self._warn('history', e.code)
 
+        # 5. ランク譜面の一覧（全曲データで変化を確かめて、変わった時だけ）
+        full = self._update_maps(run_at) or full
+
+        # 6. 自分のスコア。BeatLeader 側で PP・★が変わっていたら（リウェイト）、譜面と自分のスコアをこの回で取り直し、比較対象も全員取り直す
+        changed = self._fetch_self_scores(pid, run_at, detect=not full)
+        if changed:
+            self._notice('reweight', changed)
+            self._refetch_all()
+            self._fetch_maps(run_at)
+            self._fetch_self_scores(pid, run_at, detect=False)
+        review.update(st, pid, run_at)   # 前回出力した曲の結果（振り返り。自分のスコアとアテンプトを使う）
+
         # 7. 比較対象のスコア
         self._fetch_pool(pid, country, me['country_rank'], s['pool_above'], s['pool_below'], run_at)
         st.set_meta('last_run_at', run_at)          # 最後まで取得できた回（起動時の自動の取得はここからの時間で決める）
         st.set_meta('last_run_player', pid)
+
+    def _maps_check(self, run_at):
+        """今回、全曲データでランク譜面の変化を確かめるか（1日1回まで。初回・全部取り直し・設定のボタンの後はいつも）と、送る ETag
+        （必ず取る時は比べる元が要るので送らない＝前と同じでも読む）"""
+        st = self.store
+        last = int(st.meta('maps_fetched_at') or 0)
+        if last and run_at - int(st.meta('maps_checked_at') or 0) < MAPS_INTERVAL:
+            return False, None
+        return True, (st.meta('song_details_etag') if last else None)
+
+    def _prefetch_song_details(self, run_at):
+        """今回確かめるなら、全曲データを別のスレッドで取り始める（_update_maps が受け取る）"""
+        due, etag = self._maps_check(run_at)
+        if not due:
+            return None
+        c = self._client
+        return _SongDetailsPrefetch(c._open, c.user_agent, etag, c.cancel_event.is_set)
 
     def _update_maps(self, run_at):
         """ランク譜面の一覧を取るかを決めて取る。BeatLeader の /maps を毎日取らないように、1日1回、全曲データの★と手元の★を比べ、違いが前に取り直した時と変わった時だけ取る
@@ -236,15 +305,21 @@ class Refresher:
         多くの譜面の★が変わっていたらリウェイトとして全部取り直す（2026-11-06 の変更を全曲データで見つけられた。自分のスコアの PP の変化での見分けも別に残す）。返り値はそうしたか"""
         c, st = self._client, self.store
         last = int(st.meta('maps_fetched_at') or 0)
-        if last and run_at - int(st.meta('maps_checked_at') or 0) < MAPS_INTERVAL:
+        due, want = self._maps_check(run_at)
+        if not due:
             return False
         self._phase('mapsCheck')
         ranked, etag, as_of = None, None, int(st.meta('song_details_as_of') or 0)
+        pre, self._pre = self._pre, None
         try:
-            # 必ず取る時は比べる元が要るので、前と同じでも読む
-            gz, etag = sd.fetch(c._open, c.user_agent, st.meta('song_details_etag') if last else None, c.cancel_event.is_set)
-            if gz is not None:
-                as_of, ranked = sd.parse(gz)
+            if pre is not None and pre.etag == want:
+                parsed, etag = pre.result(c.cancel_event)   # 取り始めておいた物（まだ届いていなければ待つ）
+            else:   # 取り始めていない・取り始めた後に印が変わった（取得の途中で設定のボタン）: 送る ETag が違うので取り直す
+                if pre is not None:
+                    pre.stop()
+                parsed, etag = _load_song_details(c._open, c.user_agent, want, c.cancel_event.is_set)
+            if parsed is not None:
+                as_of, ranked = parsed
             usable = run_at - as_of < MAPS_FALLBACK
         except sd.Unavailable as e:
             log.info('song details unavailable: %s', e)

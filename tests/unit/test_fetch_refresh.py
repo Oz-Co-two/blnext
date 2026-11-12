@@ -1,6 +1,6 @@
 # 取得の流れ（core/fetch/refresh.py）: 途中の失敗・中止で取得済みの分が残ること、差分更新の分岐、進み具合。
 # 作り物の BeatLeader（fakebl.py）の前に hook を置き、決めた要求だけ別の応答・失敗にする
-import io, threading, urllib.error
+import io, threading, time, urllib.error
 from urllib.parse import urlsplit, parse_qs
 import pytest
 from core.fetch import beatleader as bl, http as bhttp, refresh
@@ -730,16 +730,20 @@ def test_cancel_during_pool_keeps_fetched_players(tmp_path):
 # ---- 進み具合・別のスレッド ----
 
 def test_progress_phases(tmp_path):
-    # 段階は決まった順に進む。終わると running=False、比較対象は done=total、通信の回数も出る
+    # 段階は決まった順に進む。終わると running=False、比較対象は done=total、通信の回数も出る。
+    # アテンプトと履歴はランク譜面の前（その間に全曲データを別のスレッドで取る）。全曲データの要求は別のスレッドから来るので、段階の順は _phase で見る
     fake = FakeBL()
-    snaps = []
+    snaps, order = [], []
     st, s, r = make(tmp_path, fake, lambda p, q: snaps.append(r.progress()))
+    phase = r._phase
+
+    def record(name, total=0):
+        if not order or order[-1] != name:
+            order.append(name)
+        phase(name, total)
+    r._phase = record
     p = r.run_sync()
-    order = []
-    for x in snaps:
-        if not order or order[-1] != x['phase']:
-            order.append(x['phase'])
-    assert order == ['self', 'ranking', 'mapsCheck', 'maps', 'selfScores', 'attempts', 'history', 'pool']
+    assert order == ['self', 'ranking', 'attempts', 'history', 'mapsCheck', 'maps', 'selfScores', 'pool']
     assert all(x['running'] for x in snaps)
     assert not p['running'] and p['finishedAt'] >= p['startedAt']
     assert p['phase'] == 'pool' and p['done'] == p['total'] == 10 and p['requests'] == len(fake.calls)
@@ -970,3 +974,91 @@ def test_button_mark_always_fetches_maps(tmp_path, at):
     at(T0 + 60)
     r.run_sync()
     assert maps_calls(fake) == 1 and fake.file_requests == [None] and st.meta('maps_fetched_at') == str(T0 + 60)
+
+
+# ---- 全曲データを BeatLeader の取得と並べて取る ----
+
+def test_song_details_fetched_alongside_beatleader(tmp_path):
+    # 全曲データ（jsDelivr。BeatLeader とは別のサーバー）は自分のプロフィールの後に別のスレッドで取り始め、国内ランキング・アテンプト・履歴の
+    # 取得と重ねる（取得の時間を短くするため。BeatLeader への要求の数・間隔は変えない）
+    fake = FakeBL()
+    fake.publish_song_details(T0 - 100, 'e1')
+    reached, waited = threading.Event(), []
+
+    def hook(p, q):
+        if p.endswith('/history/compact'):
+            reached.set()
+        elif p.startswith('/gh/'):
+            waited.append(reached.wait(10))   # 全曲データを使う前の最後の BeatLeader の要求（履歴）が届くまで返さない
+    st, s, r = make(tmp_path, fake, hook)
+    p = r.run_sync()
+    assert waited == [True] and p['error'] is None and p['warnings'] == []
+    assert fake.file_requests == [None] and maps_calls(fake) == 1 and st.meta('song_details_etag') == 'e1'
+
+
+def test_cancel_while_waiting_for_song_details(tmp_path):
+    # 全曲データがまだ届かないうちに中止: 届くのを待たずに「中止」で止まる（警告にしない。確かめた印も付けない）
+    fake = FakeBL()
+    fake.publish_song_details(T0 - 100, 'e1')
+    release = threading.Event()
+
+    def hook(p, q):
+        if p.startswith('/gh/'):
+            for _ in range(1000):   # 取得のスレッドが全曲データを待ち始めるまで
+                if r.progress()['phase'] == 'mapsCheck':
+                    break
+                time.sleep(0.01)
+            r.cancel()
+            release.wait(10)
+    st, s, r = make(tmp_path, fake, hook)
+    p = r.run_sync()
+    before = not release.is_set()
+    release.set()
+    assert before and p['cancelled'] and p['error'] is None and p['warnings'] == [] and p['phase'] == 'mapsCheck'
+    assert st.meta('maps_checked_at') is None and st.meta('last_run_at') is None
+
+
+def test_button_during_refresh_rereads_song_details(tmp_path, at, monkeypatch):
+    # 全曲データを ETag 付きで取り始めた後に設定のボタンが押された: 比べる元が要るので、ETag を送らずに読み直してランク譜面を取る
+    made = []
+
+    class Rec(refresh._SongDetailsPrefetch):
+        def __init__(self, *a):
+            super().__init__(*a)
+            made.append(self)
+    monkeypatch.setattr(refresh, '_SongDetailsPrefetch', Rec)
+    fake = FakeBL()
+    fake.publish_song_details(T0 - 100, 'e1')
+    armed = []
+
+    def hook(p, q):
+        if armed and p.endswith('/history/compact'):
+            armed.clear()
+            st.set_meta('maps_fetched_at', None)   # serve.py の maps/refetch と同じ
+    st, s, r = make(tmp_path, fake, hook)
+    r.run_sync()
+    made.clear(); fake.calls.clear(); fake.file_requests.clear()
+    armed.append(1)
+    at(T0 + 86400)
+    p = r.run_sync()
+    assert len(made) == 1 and made[0].etag == 'e1' and made[0]._done.wait(10)   # 取り始めた物（ETag 付き）は使わない
+    assert not armed and len(fake.file_requests) == 2 and set(fake.file_requests) == {'e1', None}
+    assert p['error'] is None and maps_calls(fake) == 1 and st.meta('maps_fetched_at') == str(T0 + 86400)
+    assert st.meta('song_details_etag') == 'e1'
+
+
+def test_song_details_stopped_when_refresh_stops_early(tmp_path, monkeypatch):
+    # 全曲データを使う前に取得が止まった（想定外の失敗）: 取りかけの全曲データもやめる
+    made = []
+
+    class Rec(refresh._SongDetailsPrefetch):
+        def __init__(self, *a):
+            super().__init__(*a)
+            made.append(self)
+    monkeypatch.setattr(refresh, '_SongDetailsPrefetch', Rec)
+    fake = FakeBL()
+    fake.publish_song_details(T0 - 100, 'e1')
+    st, s, r = make(tmp_path, fake, lambda p, q: RuntimeError('boom') if p.endswith('/history/compact') else None)
+    p = r.run_sync()
+    assert p['error'] == 'internal' and len(made) == 1 and made[0]._stop.is_set() and r._pre is None
+    assert st.meta('maps_checked_at') is None

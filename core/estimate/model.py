@@ -24,6 +24,12 @@ MODE_SCALES = np.round(np.arange(0.5, 1.5001, 0.01), 2)   # 倍率の候補
 # 両手の上限を引き上げる）
 CEIL_WINDOW = 0.5
 CEIL_MIN = 8   # 2026-11-01 に 5 → 8（ワンセイバーは窓が 5〜13 曲で、5 だと見込みが約4割減った。両手は変わらない）
+# ±CEIL_WINDOW のほかの曲が CEIL_MIN より少なければ、CEIL_WINDOW ずつここまで広げる（2026-11-12）。遊んだ曲の少ない★の帯（上位の人の易しい★・
+# 誰でも一番難しい★）で上限が付かず、似ている人の値で 99% 台に押し上げられた易しい未プレイの曲が、100% 近くの PP の急な所で 1曲だけで
+# 総PP を大きく増やす見込みになっていた（その★の近くで自分が出した一番より 1% 近く上）。同じモードの一番で切る形は、易しい曲ほど精度が
+# 高いのでゆるすぎた。国内上位の人と作者で確かめると、広げた上限を超えていた自己ベストは余裕 +0.5% 以上で 0件、隠して当てた外れは変わった曲で
+# 小さくなり、リストが変わったのはその人の着実だけだった。±1.5 まで広げても同じだった（作者の調べ「世界ランクの比較対象」の追記）
+CEIL_WINDOW_MAX = 1.0
 # 似ている人が足りない人（2026-11-06。作者の調べ「ほかの人のデータ」）: 共通の曲が min_overlap 曲に届く人がいないと似ている人が 0 人に
 # なり、未プレイの曲の確からしさが全部 0 で、並び順の値も 0（データベースの順に選ばれ、誰にでも同じ曲が入る）。自分のスコアが 30曲未満の人と、
 # 順位の近い人のスコアが少ない人（国内 1600位台の周りは中央 15曲）に起きる。この人数より少ない人だけ、確からしさの下限（recommend.CONF_FLOOR）・
@@ -63,7 +69,8 @@ def fc_norm(store, player_id):
 
 
 class AccCeiling:
-    """(★, モード) → 精度の上限: 同じモードで★ ±CEIL_WINDOW の、ほかの曲の自分の一番の精度。rows は (モード, ★, 精度, 譜面) の並び"""
+    """(★, モード) → 精度の上限: 同じモードで★ ±CEIL_WINDOW（曲が足りなければ CEIL_WINDOW_MAX まで広げる）の、ほかの曲の自分の一番の精度。
+    rows は (モード, ★, 精度, 譜面) の並び"""
     def __init__(self, rows):
         by = {}
         for mode, stars, acc, lid in rows:
@@ -74,19 +81,23 @@ class AccCeiling:
             self.by[mode] = (np.array([x[0] for x in xs], dtype=float), [x[1] for x in xs], [x[2] for x in xs])
 
     def __call__(self, stars, mode, exclude=None):
-        """(上限, その精度の譜面, 窓のほかの曲の数)。exclude はその曲自身（窓から除く）。窓のほかの曲が CEIL_MIN より少なければ
-        上限と譜面は None"""
+        """(上限, その精度の譜面, 窓のほかの曲の数, 使った窓の幅 ±★)。exclude はその曲自身（窓から除く）。±CEIL_WINDOW のほかの曲が
+        CEIL_MIN より少なければ CEIL_WINDOW ずつ CEIL_WINDOW_MAX まで広げ、それでも少なければ上限・譜面・幅は None（数は一番広い窓の数）"""
         d = self.by.get(mode or '')
         if d is None or not stars:
-            return None, None, 0
+            return None, None, 0, None
         s, acc, ids = d
-        i = int(np.searchsorted(s, stars - CEIL_WINDOW, side='left'))
-        j = int(np.searchsorted(s, stars + CEIL_WINDOW, side='right'))
-        xs = [(acc[k], ids[k]) for k in range(i, j) if ids[k] != exclude]
-        if len(xs) < CEIL_MIN:
-            return None, None, len(xs)
-        top = max(xs, key=lambda x: x[0])
-        return float(top[0]), top[1], len(xs)
+        w = CEIL_WINDOW
+        while True:
+            i = int(np.searchsorted(s, stars - w, side='left'))
+            j = int(np.searchsorted(s, stars + w, side='right'))
+            xs = [(acc[k], ids[k]) for k in range(i, j) if ids[k] != exclude]
+            if len(xs) >= CEIL_MIN:
+                top = max(xs, key=lambda x: x[0])
+                return float(top[0]), top[1], len(xs), w
+            if w >= CEIL_WINDOW_MAX - 1e-9:
+                return None, None, len(xs), None
+            w = min(CEIL_WINDOW_MAX, w + CEIL_WINDOW)
 
     def overall(self, mode, exclude=None):
         """(同じモードのほかの曲の自分の一番, その譜面)。窓の曲が足りない時の上限の代わり（似ている人が足りない人だけ。recommend.py）。
