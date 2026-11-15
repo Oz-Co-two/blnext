@@ -33,11 +33,13 @@ class Engine:
 
     def get(self, settings=None):
         """(model, 推定の並び)。settings はセットから見た設定（Settings.view）。省略時は画面で開いているセット。データが無ければ (None, [])"""
-        s = (settings or self.settings).values()
-        dk = self._data_key()
-        mkey = tuple(str(s[k]) for k in MODEL_KEYS)
-        ekey = mkey + tuple(str(s[k]) for k in EST_KEYS)
         with self._lock:
+            # データの印と設定の値は鍵を取ってから読む。前に読むと、ほかの呼び出し（取得の後に先に作る serve.warm_engine など）の
+            # 計算を待っている間に取得が終わった時、その呼び出しが新しいデータで作った結果を、待つ前の古い印で全部捨てて作り直した
+            s = (settings or self.settings).values()
+            dk = self._data_key()
+            mkey = tuple(str(s[k]) for k in MODEL_KEYS)
+            ekey = mkey + tuple(str(s[k]) for k in EST_KEYS)
             if dk != self._dk:   # データが変わったら全部作り直す
                 self._models.clear()
                 self._ests.clear()

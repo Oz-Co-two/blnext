@@ -409,9 +409,22 @@ class _FakeHTTPD:
 
 
 def _run_script(monkeypatch, *args):
+    """起動した時に裏で始める推定（start_warm のスレッド）は、終わるのを待ってからデータベースを閉じる。始めたスレッドの名前は
+    ns['_started']"""
+    started, real = [], threading.Thread
+
+    class Recording(real):
+        def start(self):
+            started.append(self)
+            super().start()
+    monkeypatch.setattr(threading, 'Thread', Recording)
     monkeypatch.setattr(sys, 'argv', ['serve.py', *args])
     ns = runpy.run_path(serve.__file__, run_name='__main__')
+    monkeypatch.setattr(threading, 'Thread', real)
+    for th in started:
+        th.join(10)
     ns['STORE'].close()
+    ns['_started'] = [th.name for th in started]
     return ns
 
 
@@ -427,6 +440,7 @@ def test_run_as_script(monkeypatch, capsys):
     url = next(l.strip() for l in out.splitlines() if l.strip().startswith('http'))
     assert url == ns['access_url'](8200) and opened == [url]
     assert _FakeHTTPD.made[0].addr == ('127.0.0.1', 8200) and _FakeHTTPD.made[0].closed
+    assert ns['_started'] == ['warm']   # 推定を裏で先に作り始める（serve.start_warm）
     _run_script(monkeypatch, '--no-browser')
     assert len(opened) == 1 and _FakeHTTPD.made[1].addr == ('127.0.0.1', 8139)
 
@@ -446,3 +460,9 @@ def test_refresh_without_player(server):
         time.sleep(0.05)
         r = api(server, 'refresh/progress')
     assert r['progress']['running'] is False and r['progress']['error'] == 'no-player'
+
+
+def test_switch_interval_is_short():
+    # 裏で推定を計算している間（serve.warm_engine）も画面の要求にすぐ答えるため、GIL の切り替えの間隔を 1ms より短くする
+    # （Windows では 1ms 以上だと、データベースを読むたびに約15ms ずつ待たされる。serve.py の setswitchinterval の説明）
+    assert sys.getswitchinterval() < 0.001

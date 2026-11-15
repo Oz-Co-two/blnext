@@ -25,11 +25,12 @@ export async function show(name){
   const main = $('#main');
   main.replaceChildren();
   main.scrollTop = 0;
-  // 描き終わるまでに時間がかかる時（プレイリストの画面は、データを取り直した後などに推定の計算をする）は「読み込んでいます」を出す。
+  // 描き終わるまでに時間がかかる時（プレイリストの画面は推定を使う。起動した時・取得の後にサーバーが裏で先に計算する＝serve.py の
+  // warm_engine ので、その計算が終わる前に開いた時は待つ）は「読み込んでいます」を出す。
   // 黒いままだと止まったように見えた（2026-11-09 の利用者の要望）。速い画面でちらつかないよう、少し待っても何も描かれていない時だけ
   const loading = h('div', {class: 'screenLoading', role: 'status'}, h('span', {class: 'spin'}),
     h('div', {}, h('div', {}, t('top.loading', '読み込んでいます…')),
-      name === 'recommend' ? h('div', {class: 'mute small'}, t('top.loadingRec', 'データを取り直した後は、推定の計算に数秒かかります')) : null));
+      name === 'recommend' ? h('div', {class: 'mute small'}, t('top.loadingRec', '推定を計算しています（起動した直後やデータを取り直した直後は、数秒かかることがあります）')) : null));
   const timer = setTimeout(() => { if(current === name && !main.childElementCount) main.append(loading); }, LOADING_DELAY);
   try{ await SCREENS[name].render(main, { show, status }); }
   finally{ clearTimeout(timer); loading.remove(); document.body.dataset.screen = name; delete document.body.dataset.busy; }

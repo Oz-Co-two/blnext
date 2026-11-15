@@ -584,6 +584,25 @@ def _fake_engine(tmp_path, monkeypatch, **settings):
     return st, s, Engine(st, s)
 
 
+def test_engine_reads_data_key_after_lock(tmp_path, monkeypatch):
+    # データの印は鍵を取ってから読む: ほかの呼び出しの計算を待っている間に取得が終わっても、待っていた方が、新しいデータで作った
+    # 結果を待つ前の古い印で捨てない（取得の後に先に作る serve.warm_engine と、画面の要求が重なった時。作り直すのは1回だけ）
+    import threading, time
+    from core.estimate import model as M
+    st, s, eng = _fake_engine(tmp_path, monkeypatch)
+    built, real = [], M.build
+    monkeypatch.setattr(M, 'build', lambda *a: built.append(1) or real(*a))
+    with eng._lock:   # ほかの呼び出しが計算している間に
+        th = threading.Thread(target=eng.get)
+        th.start()
+        time.sleep(0.2)   # 待ち始めてから
+        st.set_meta('last_run_at', int(st.meta('last_run_at')) + 1)   # 取得が終わった
+    th.join(10)
+    eng.get()
+    assert built == [1]
+    st.close()
+
+
 def test_estimate_lowers_above_my_star_range(tmp_path, monkeypatch):
     # 自分の★の範囲より上は、比較対象の人の下がり方 × 倍率で下げる（範囲の中は同じ）。倍率 0 なら今までどおり
     st, s, eng = _fake_engine(tmp_path, monkeypatch)

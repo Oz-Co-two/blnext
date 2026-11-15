@@ -100,8 +100,11 @@ def pool_pages(rank, above, below, target=None, page_size=bl.PLAYERS_PAGE):
 
 
 class Refresher:
-    def __init__(self, store, settings, client_factory):
+    def __init__(self, store, settings, client_factory, on_finish=None):
+        """on_finish: 取得が終わった後（中止・失敗の時も。取得済みの分でデータは変わりうる）に、終わったと知らせてから同じスレッドで呼ぶ
+        関数（serve.py が推定を先に作っておく。warm_engine）"""
         self.store, self.settings, self.client_factory = store, settings, client_factory
+        self.on_finish = on_finish
         self._lock = threading.Lock()
         self._client = None
         self._public = None   # 今の取得で読んだ統計の公開の印（_do が入れる）
@@ -180,6 +183,11 @@ class Refresher:
                 self._pre.stop()
                 self._pre = None
             self._state.update(running=False, finishedAt=now())
+        if self.on_finish is not None:   # 画面には終わったと見せてから（ホームの描き直しを待たせない）
+            try:
+                self.on_finish()
+            except Exception:
+                log.exception('after refresh failed')
 
     def _do(self, run_at):
         s = self.settings.values()

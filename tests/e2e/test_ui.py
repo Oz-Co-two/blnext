@@ -668,7 +668,7 @@ def test_loading_while_screen_renders(ui, monkeypatch):
     ui.click_sel('#nav button', text='プレイリスト', settle=0)
     ui.until("!!document.querySelector('.screenLoading')", what='読み込んでいます')
     text = ui.js("document.querySelector('.screenLoading').innerText")
-    assert '読み込んでいます' in text and '推定の計算' in text
+    assert '読み込んでいます' in text and '推定を計算' in text
     ui.until("!document.querySelector('.screenLoading') && !!document.querySelector('.recList')", timeout=10, what='描き終わる')
     ui.click_sel('#nav button', text='ホーム')
     ui.until("document.body.dataset.screen==='home' && !document.body.dataset.busy", what='ホーム')

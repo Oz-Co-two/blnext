@@ -382,6 +382,19 @@ def test_main_closing_handler(main_env, monkeypatch):
     assert handler() is True   # 失敗しても閉じるのは止めない
 
 
+def test_main_starts_warm_once(tmp_path, main_env, monkeypatch):
+    # 画面を出す起動では、プレイリストの画面の推定を裏で先に作り始める（serve.start_warm。最初に開いた時に待たせない）。
+    # 窓を作る前に始める。ビルドの確かめ（selftest）では始めない
+    calls = []
+    monkeypatch.setattr(serve, 'start_warm', lambda: calls.append('warm'))
+    wv = _fake_webview_module(lambda win: calls.append('start'))
+    monkeypatch.setitem(sys.modules, 'webview', wv)
+    app.main()
+    assert calls == ['warm', 'start']
+    app.selftest(str(tmp_path / 'selftest.json'))
+    assert calls == ['warm', 'start']
+
+
 # ---- 二重起動の防止（core/single_instance.py。本物の窓は探すだけで、前に出す処理は呼ばない） ----
 
 def test_main_skips_instance_check_for_selftest_and_apply_update(monkeypatch):

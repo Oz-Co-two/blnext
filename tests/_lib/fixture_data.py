@@ -84,6 +84,11 @@ def build(data_dir, n_players=60, self_rank=30, n_maps=120):
             'SELECT score_id, replay_url FROM scores WHERE player_id=? AND replay_url IS NOT NULL ORDER BY leaderboard_id', (fake.self_id,))]
         for i in range(0, len(pairs), replay.MAX_PER_CALL):
             assert replay.ensure(st, pairs[i:i + replay.MAX_PER_CALL], 'test', opener=fake, sleep=lambda _: None) == 0
+        # 2回の取得が同じ秒に終わると、最後の取得の回（last_run_at）は今より1秒先になる（refresh の run_at は前回＋1）。そのまま
+        # その秒のうちに出力すると「取得の前の出力」に見えて、同じリストを続けて出したのが2回に数えられた（作ってすぐに動いたテストだけ
+        # 落ちた）。その時刻になるまで待つ（多くて1秒）
+        while time.time() < int(st.meta('last_run_at') or 0):
+            time.sleep(0.05)
     finally:
         bhttp.GLOBAL_INTERVAL, bhttp.PLAYERS_INTERVAL = old
         st.close()

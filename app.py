@@ -264,6 +264,7 @@ def main():
     port = _free_port()
     httpd = serve.make_server(port=port, bind='127.0.0.1')
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    serve.start_warm()   # プレイリストの画面の推定を裏で先に作る（最初に開いた時に待たせない）
 
     import webview
     api = _make_api(serve.SETTINGS, webview, serve.bs_offer, serve.export_for_file)

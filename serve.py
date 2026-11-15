@@ -2,7 +2,7 @@
 # app.py が空きポートでスレッド起動して pywebview で表示する。開発中は `python serve.py` 単体で起動し、
 # 表示される合言葉付きの URL を普通のブラウザ（Edge/Chrome）で開いて確認できる。
 # 骨組みは NLM（Non-Linear Mapper Oz-Co2版）の serve.py を流用した。
-import base64, binascii, hmac, http.server, json, os, platform, posixpath, secrets, sys, threading, time
+import base64, binascii, hmac, http.server, json, logging, os, platform, posixpath, secrets, sys, threading, time
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 from core import app_update, launch, logs, review, views
@@ -29,10 +29,17 @@ APP_VERSION = app_version(BASE_DIR)
 FROZEN = bool(getattr(sys, 'frozen', False))
 
 logs.setup(DATA_DIR)
+log = logging.getLogger('bln.serve')
+# GIL の切り替えの間隔（初期値 5ms）を 0.5ms にする。裏で推定を計算している間（warm_engine。CPU を使い続ける）、画面の要求に答える
+# スレッドはデータベースを読むたびに GIL を手放し、取り戻すのを毎回待たされる。Windows ではその待ちが 1ms より短いと 0（すぐ譲って
+# もらう）、1ms 以上はタイマーの刻み（約15ms）になるので、5ms・1ms のままだとホームの答えが 0.06秒 → 2秒に遅れ、起動した時は最初の
+# 画面が出るまで 1.6秒 → 6.9秒になった（2026-11-15。ランク譜面が約4000・セットが4つのデータで測った）。0.5ms ならホームは 0.17秒で、計算も遅くならない。
+# CPU を使うスレッドが2つ同時に動く時だけ、切り替えが増えて 3〜7% 遅くなる
+sys.setswitchinterval(0.0005)
 SETTINGS = Settings(CONFIG_DIR)
 STORE = Store(os.path.join(DATA_DIR, 'data', 'blnext.db'))
 USER_AGENT = 'blnext/%s' % (APP_VERSION.lstrip('v') or 'dev')   # アプリ名と版（仕様書の「アクセス量の約束」）
-REFRESHER = Refresher(STORE, SETTINGS, lambda: BLClient(USER_AGENT))
+REFRESHER = Refresher(STORE, SETTINGS, lambda: BLClient(USER_AGENT), on_finish=lambda: warm_engine())
 ENGINE = Engine(STORE, SETTINGS)
 # おすすめ画面での一時的な操作（外す・次点と入れ替える）。セットごと・アプリを閉じるまで。固定・今後出さないは DB（user_marks）に残す
 SESSION = {}   # セットの id → {'removed': set, 'added': set}
@@ -506,6 +513,34 @@ def _api_refresh_progress(body):
 @api('refresh/cancel')
 def _api_refresh_cancel(body):
     return {'progress': REFRESHER.cancel()}
+
+
+def warm_engine():
+    """全部のセットの推定（Engine）を先に作っておく。取得が終わった後（Refresher の on_finish。取得のスレッドで動く）と、
+    アプリを起動した時（start_warm。app.py）に呼ぶ。データが変わると推定を作り直すので、前は取得の後に初めてプレイリストの画面を
+    開いた時に数秒待たせていた。起動して最初の計算は譜面ごとの PP の曲線（ppcalc.get_curve。アプリを閉じるまで覚える）も作るので
+    もっとかかった（2026-11-15 の利用者の要望）。画面で開いているセットから。計算の設定が同じセットは1回で済む。計算の途中で画面が
+    開いた時は、Engine の鍵でその計算の終わりを待って同じ結果を使う（2回は計算しない）。
+    始めた時の ENGINE・SETTINGS を最後まで使う（途中で差し替えられても＝テスト、前の物で終える）"""
+    engine, settings = ENGINE, SETTINGS
+    active = settings.active_preset()
+    for pid in sorted(settings.preset_ids(), key=lambda p: p != active):
+        try:
+            engine.get(settings.view(pid))
+        except SettingsError:   # 計算している間にセットを消した
+            continue
+        except Exception:   # 先に作れなくても困らない（画面を開いた時に作り直し、失敗はそこで出る）
+            log.exception('warm %s failed', pid)
+
+
+def start_warm():
+    """アプリを起動した時に、推定を裏で先に作り始める（warm_engine）。起動しても取得しない時（前回の取得から間が短い）に、最初に
+    プレイリストの画面を開いて待たせないため。取得する時も、譜面ごとの PP の曲線を取得の間に作っておけるので、取得の後に先に作る分が
+    速く終わる（取得はほとんど通信を待っているので、取得を遅くしない）。画面を出す起動だけ（app.py の main・このファイルを直に起動した時）。
+    テストのサーバー（make_server）では始めない"""
+    th = threading.Thread(target=warm_engine, name='warm', daemon=True)
+    th.start()
+    return th
 
 
 @api('home')
@@ -1568,6 +1603,7 @@ if __name__ == '__main__':
           ' (it contains an access key that changes every time the server starts):', flush=True)
     print('  ' + url, flush=True)
     print('Press Ctrl+C to stop.', flush=True)
+    start_warm()
     if '--no-browser' not in sys.argv:
         try:
             launch.start(url)

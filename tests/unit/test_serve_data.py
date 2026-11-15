@@ -450,6 +450,27 @@ def test_auto_refresh_decision(data, monkeypatch):
     assert not serve.should_auto_refresh(v, now + 99 * 3600)          # ネットに出ない設定（テスト）
 
 
+def test_warm_engine_after_refresh(data, monkeypatch):
+    # 取得が終わった後に（REFRESHER の on_finish）、全部のセットの推定を、画面で開いているセットから先に作っておく
+    # （取得の後に初めてプレイリストの画面を開いた時に待たせない）。その後に画面を開いても作り直さない。途中で消したセットは飛ばす
+    from core.estimate import model as M
+    assert serve.REFRESHER.on_finish is not None
+    p2 = serve.SETTINGS.add_preset('計算の設定が違う', copy_from='p1')
+    serve.SETTINGS.update({'self_half_life_days': 90}, preset=p2)
+    serve.SETTINGS.update({'active_preset': p2})
+    ids = serve.SETTINGS.preset_ids()
+    monkeypatch.setattr(serve.SETTINGS, 'preset_ids', lambda: ids + ['gone'])
+    serve.STORE.set_meta('last_run_at', int(serve.STORE.meta('last_run_at')) + 1)   # 取得でデータが変わった
+    built = []
+    real = M.build
+    monkeypatch.setattr(M, 'build', lambda store, view, now: built.append(view.preset) or real(store, view, now))
+    serve.REFRESHER.on_finish()
+    assert built == [p2, 'p1']
+    for pid in ('p1', p2):
+        assert serve._api_recommend({'preset': pid})['hasData']
+    assert built == [p2, 'p1']
+
+
 # ---- 保存したリスト（作った時のまま残す。データを取り直しても勝手には変えない） ----
 # 前に作ったリストの理由を次のプレイまでに見直せるように、作り直すかは利用者が決める。作り直すのは、まだ無い時・
 # リストに効く設定を変えた時・画面の操作の時・「作り直す」の時だけ

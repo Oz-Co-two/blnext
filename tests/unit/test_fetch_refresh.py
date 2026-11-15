@@ -95,6 +95,26 @@ def test_broken_profile_is_internal_error(tmp_path):
     assert views.home(st, s)['hasData']
 
 
+def test_on_finish_runs_after_done_even_on_failure(tmp_path):
+    # 取得が終わった後に on_finish を呼ぶ（serve.py が推定を先に作っておく）。呼ぶ時には、もう終わったと見える（画面を待たせない）。
+    # 失敗した回も呼ぶ（取得済みの分でデータは変わりうる）。on_finish の失敗は取得の結果に混ぜない
+    fake = FakeBL()
+    broken = [False]
+    st, s, r = make(tmp_path, fake, lambda p, q: Resp({'name': '?'}) if broken[0] and p == '/player/' + fake.self_id else None)
+    seen = []
+
+    def done():
+        seen.append(r.progress())
+        raise RuntimeError('先に作れなかった')
+    r.on_finish = done
+    p = r.run_sync()
+    assert p['error'] is None and p['warnings'] == [] and len(seen) == 1
+    assert not seen[0]['running'] and seen[0]['finishedAt']
+    broken[0] = True
+    p = r.run_sync()
+    assert p['error'] == 'internal' and len(seen) == 2 and not seen[1]['running']
+
+
 def test_runs_in_same_second_get_distinct_run_at(tmp_path, at):
     # 同じ秒に2回取得しても前の回を上書きしない（run_at を前回＋1にする）。「前回からの変化」は前の回と比べる
     fake = FakeBL()
